@@ -1,6 +1,9 @@
+import argparse
+"""Chat about local documents using manual and model requested tools."""
 import json
 import shlex
 
+from tools.compact import compact
 from tools.calculate import calculate
 from tools.cat import cat
 from tools.grep import grep
@@ -79,7 +82,7 @@ tools = [
 load_dotenv()
 
 
-def llm(messages, temperature=1):
+def llm(messages, temperature=1, debug=False):
     """Send messages, handle tool requests, and return the final reply.
 
     >>> from unittest.mock import MagicMock, patch
@@ -145,7 +148,12 @@ def llm(messages, temperature=1):
         for call in reply.tool_calls:
             name = call.function.name
             arguments = json.loads(call.function.arguments)
-            result = functions[name](**arguments)
+            if debug:
+                print('Tool:', name, 'Arguments:', arguments)
+            try:
+                result = functions[name](**arguments)
+            except (TypeError, KeyError) as error:
+                result = 'Tool request error: ' + str(error)
             messages.append({
                 'role': 'tool',
                 'tool_call_id': call.id,
@@ -154,8 +162,21 @@ def llm(messages, temperature=1):
 
 
 class Chat:
-    def __init__(self, system='You are a helpful assistant.'):
+    """Keep conversation history and provide access to local tools.
+
+    Each instance remembers its own messages and tool results.
+
+    >>> bot = Chat(system='Be helpful.')
+    >>> bot.messages
+    [{'role': 'system', 'content': 'Be helpful.'}]
+    >>> other = Chat()
+    >>> bot.messages is other.messages
+    False
+    """
+    def __init__(self, system='You are a helpful assistant.', debug=False):
+        """Start a conversation with a system message and debug setting."""
         self.messages = [{'role': 'system', 'content': system}]
+        self.debug = debug
 
     def send_message(self, message, temperature=0.8):
         """Send a message and remember the reply.
@@ -171,10 +192,10 @@ class Chat:
         'Hello!'
         """
         self.messages.append({'role': 'user', 'content': message})
-        reply = llm(self.messages, temperature=temperature)
+        reply = llm(self.messages, temperature=temperature, debug=self.debug)
         self.messages.append({'role': 'assistant', 'content': reply})
         return reply
-    
+
     def run_command(self, command):
         """Run a manual tool command and remember its result.
 
@@ -189,10 +210,31 @@ class Chat:
         'Error: unknown command or incorrect arguments.'
         >>> bot.run_command('/cat')
         'Error: unknown command or incorrect arguments.'
+                >>> from unittest.mock import patch
+        >>> bot = Chat()
+        >>> with patch('chat.Groq', side_effect=AssertionError('API called')):
+        ...     bot.run_command('/calculate 17 * 23')
+        '391'
+        >>> history = []
+        >>> def fake_llm(messages, temperature, debug=False):
+        ...     history.append(messages.copy())
+        ...     return 'The result was 391.'
+        >>> with patch('chat.llm', side_effect=fake_llm):
+        ...     bot.send_message('What was the result?')
+        'The result was 391.'
+        >>> history[0][-3:] == [
+        ...     {'role': 'user', 'content': '/calculate 17 * 23'},
+        ...     {'role': 'assistant', 'content': '391'},
+        ...     {'role': 'user', 'content': 'What was the result?'}]
+        True
         """
+        if command.strip() == '/compact':
+            return compact(self)
         parts = shlex.split(command)
         name = parts[0]
         arguments = parts[1:]
+        if self.debug:
+            print('Command:', name, 'Arguments:', arguments)
 
         if name == '/ls' and len(arguments) == 0:
             result = ls()
@@ -212,7 +254,7 @@ class Chat:
         return result
 
 
-def repl(temperature=0.8):
+def repl(temperature=0.8, debug=False):
     """Chat until EOFError or KeyboardInterrupt.
 
     >>> from unittest.mock import MagicMock, patch
@@ -240,7 +282,10 @@ def repl(temperature=0.8):
     <BLANKLINE>
     """
 
-    chat = Chat(system='You are a helpful assistant. You always speak like a pirate.')
+    chat = Chat(
+        system='You are a helpful assistant. You always speak like a pirate.',
+        debug=debug,
+    )
     try:
         while True:
             user_input = input('chat> ')
@@ -252,5 +297,29 @@ def repl(temperature=0.8):
         print()
 
 
+def main(argv=None):
+    """Run one message or start an interactive conversation.
+
+    >>> from unittest.mock import patch
+    >>> with patch('chat.llm', return_value='Hello!'):
+    ...     main(['Hi'])
+    Hello!
+    >>> with patch('chat.repl') as mock_repl:
+    ...     main([])
+    >>> mock_repl.call_count
+    1
+    """
+    parser = argparse.ArgumentParser()
+    parser.add_argument('message', nargs='?')
+    parser.add_argument('--debug', action='store_true')
+    args = parser.parse_args(argv)
+
+    if args.message is None:
+        repl(debug=args.debug)
+    else:
+        bot = Chat(debug=args.debug)
+        print(bot.send_message(args.message))
+
+
 if __name__ == '__main__':
-    repl()
+    main()
