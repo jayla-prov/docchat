@@ -1,5 +1,5 @@
-import argparse
 """Chat about local documents using manual and model requested tools."""
+import argparse
 import json
 import shlex
 
