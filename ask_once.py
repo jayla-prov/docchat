@@ -1,3 +1,4 @@
+"""Send one example message to the model and print its reply."""
 from chat import llm
 
 reply = llm([
